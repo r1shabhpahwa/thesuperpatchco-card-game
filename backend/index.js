@@ -33,7 +33,11 @@ app.post('/cards', (req, res) => {
     //Pre-process cards to handle multiple formats
     const cleanedCards = cards.map(preProcess);
 
-    console.log(cleanedCards);
+    //console.log(cleanedCards);
+
+    const validatedCards = validateCards(cleanedCards);
+
+    console.log(validatedCards);
     
     res.status(200).send();
 });
@@ -61,9 +65,37 @@ const preProcess = (card) => {
         return { alphabet: card.alphabet, number: card.number };
     } else {
         // Handle invalid formats
-        return { alphabet: null, number: null, error: 'Invalid format' };
+        return { alphabet: null, number: null, error: 'Invalid input format' };
     }
 };
+
+// Validation function
+const validateCards = (cards) => {
+    return cards.map(card => {
+        // Skip cards with an existing error
+        if (card.error) {
+            return card;
+        }
+        let validationResult = { ...card }; // Copy the card to keep it intact
+  
+        // Validate alphabet
+        if (card.alphabet === null || !/[A-Z]/.test(card.alphabet)) {
+            validationResult.error = 'Card must have an Alphabet A-Z.';
+        }
+  
+        // Validate number
+        if (card.number === null || typeof card.number !== 'number' || card.number < 0 || card.number > 9 || !Number.isInteger(card.number)) {
+            validationResult.error = 'Number must be between 0-9.';
+        }
+
+        // Validate rule: if one face of the card is a “D” the other side must be a “3”.
+        if (card.alphabet === "D" && card.number !== 3 ) {
+            validationResult.error = 'Card "D" must have the number 3.';
+        }
+  
+        return validationResult;
+    });
+  };
 
 // Start Server
 app.listen(PORT, () => {
