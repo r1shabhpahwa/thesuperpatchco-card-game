@@ -1,26 +1,50 @@
 import express from "express";
+import winston from "winston";
+import fs from "fs";
+import { v1 as uuidv1 } from "uuid";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Setup Winston logger
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.printf(({ timestamp, level, message }) => {
+      return `${timestamp} ${level}: ${message}`;
+    })
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'error.log' })
+  ]
+});
 
 // Middleware to parse JSON bodies
 app.use(express.json());
 app.use(express.text());
 
+// History tracking
+let cardHistory = [];
+
 // Endpoint to handle the list of cards
 app.post('/cards', (req, res) => {
-    //const cards = req.body.cards;
-
     let cards;
+
+    logger.info(`Received request with content type: ${req.get('Content-Type')}`);
 
     // Check the content type of the request
     if (req.is('application/json')) {
         // If the request is JSON( Ex: {cards : [..]})
         cards = req.body.cards;
-
     } else if (req.is('text/plain')) {
         // If the request is plain text (Ex: [..])
-        cards = JSON.parse(req.body);
+        try {
+            cards = JSON.parse(req.body);
+        } catch (err) {
+            return res.status(400).json({ error: 'Invalid JSON format in text input.' });
+        }
     } else {
         // Unsupported content type
         return res.status(400).json({ error: 'Unsupported input type.' });
@@ -30,74 +54,157 @@ app.post('/cards', (req, res) => {
         return res.status(400).json({ error: 'Input must be an array of cards' });
     }
 
-    //Pre-process cards to handle multiple formats
-    const cleanedCards = cards.map(preProcess);
+    logger.info(`Received ${cards.length} cards for validation.`);
+
+    // Pre-process cards to handle multiple formats
+    const cleanedCards = cards.map((card, index) => preProcess(card, index));
 
     //console.log(cleanedCards);
 
+    // Validate cards
     const validatedCards = validateCards(cleanedCards);
 
-    console.log(validatedCards);
-    
-    res.status(200).send();
+    // Filter out invalid cards
+    const invalidCards = validatedCards.filter(card => card.errors && card.errors.length > 0);
+
+    // Save Scanned Cards History
+    logger.info("Saving processed card history...");
+    saveHistory(validatedCards);
+
+    if (invalidCards.length > 0) {
+        logger.warn(`Validation failed for ${invalidCards.length} cards.`);
+        return res.status(400).json({
+            error: 'Invalid card data.',
+            discardCount: invalidCards.length,
+            invalidCards: invalidCards
+        });
+    }
+
+    logger.info("All cards validated successfully.");
+    res.status(200).json({ message: 'Deck is valid' });
 });
 
-// Function to pre-process and normalize a single card
-const preProcess = (card) => {
+app.get('/history', (req, res) => {
+    res.status(200).json({ history: cardHistory });
+});
+
+const saveHistory = async (scannedCards) => {
+    let deckId = uuidv1();
+
+    scannedCards.forEach(card => {
+        cardHistory.push({
+            deckId: deckId,
+            cardId: card.id,
+            alphabet: card.alphabet,
+            number: card.number,
+            errors: card.errors
+        });
+    });
+};
+
+
+const preProcess = (card, id) => {
     if (typeof card === 'string') {
-        // Handle comma-separated strings
-        const [alphabet, number] = card.split(',');
-        if (!alphabet || !number || isNaN(number)) {
-            return { alphabet: null, number: null, error: 'Invalid format' };
+        // Handle comma-separated strings in any order
+        const parts = card.split(',').map(part => part.trim());
+        let alphabet = null, number = null;
+
+        parts.forEach(part => {
+            if (!alphabet && isNaN(part)) {
+                alphabet = part; // Pick the first non-numeric string
+            } else if (number === null && !isNaN(part)) {
+                number = parseInt(part, 10); // Pick the first valid number
+            }
+        });
+
+        if (!alphabet || number === null) {
+            logger.error(`Parsing error in card at index ${id}: Invalid format for input string.`);
+            return { id, alphabet: null, number: null, errors: ['Invalid format for input string.'] };
         }
-        return { alphabet: alphabet.trim(), number: parseInt(number.trim(), 10) };
+        return { id, alphabet, number, errors: [] };
+
     } else if (Array.isArray(card)) {
-        // Handle arrays
-        if (card.length !== 2 || typeof card[0] !== 'string' || typeof card[1] !== 'number') {
-            return { alphabet: null, number: null, error: 'Invalid format' };
+        // Handle arrays in any order
+        let alphabet = null, number = null;
+
+        card.forEach(item => {
+            if (!alphabet && typeof item === 'string') {
+                alphabet = item;
+            } else if (number === null && typeof item === 'number') {
+                number = item;
+            }
+        });
+
+        if (!alphabet || number === null) {
+            logger.error(`Parsing error in card at index ${id}: Invalid format for input array.`);
+            return { id, alphabet: null, number: null, errors: ['Invalid format for input array.'] };
         }
-        return { alphabet: card[0], number: card[1] };
+        return { id, alphabet, number, errors: [] };
+
     } else if (typeof card === 'object' && card !== null) {
-        // Handle objects
-        if (!card.alphabet || !card.number || typeof card.alphabet !== 'string' || typeof card.number !== 'number') {
-            return { alphabet: null, number: null, error: 'Invalid format' };
+        // Handle objects with dynamic keys in any order
+        let alphabet = null, number = null;
+
+        Object.values(card).forEach(value => {
+            if (!alphabet && typeof value === 'string') {
+                alphabet = value;
+            } else if (number === null && typeof value === 'number') {
+                number = value;
+            }
+        });
+
+        if (!alphabet || number === null) {
+            logger.error(`Parsing error in card at index ${id}: Invalid format for input object.`);
+            return { id, alphabet: null, number: null, errors: ['Invalid format for input object.'] };
         }
-        return { alphabet: card.alphabet, number: card.number };
+
+        return { id, alphabet, number, errors: [] };
+
     } else {
         // Handle invalid formats
-        return { alphabet: null, number: null, error: 'Invalid input format' };
+        logger.error(`Parsing error in card at index ${id}: Unknown input type and format.`);
+        return { id, alphabet: null, number: null, errors: ['Unknown input type and format.'] };
     }
 };
+
 
 // Validation function
 const validateCards = (cards) => {
     return cards.map(card => {
-        // Skip cards with an existing error
-        if (card.error) {
+
+        // Skip cards with an existing input error
+        if (card.alphabet === null && card.number === null) {
             return card;
         }
+
         let validationResult = { ...card }; // Copy the card to keep it intact
-  
+
         // Validate alphabet
         if (card.alphabet === null || !/[A-Z]/.test(card.alphabet)) {
-            validationResult.error = 'Card must have an Alphabet A-Z.';
+            if (!card.errors) card.errors = [];
+            card.errors.push('Card must have an Alphabet A-Z.');
+            logger.error(`Validation error in card at index ${card.id}: Card must have an Alphabet A-Z.`);
         }
-  
+
         // Validate number
         if (card.number === null || typeof card.number !== 'number' || card.number < 0 || card.number > 9 || !Number.isInteger(card.number)) {
-            validationResult.error = 'Number must be between 0-9.';
+            if (!card.errors) card.errors = [];
+            card.errors.push('Number must be between 0-9.');
+            logger.error(`Validation error in card at index ${card.id}: Number must be between 0-9.`);
         }
 
         // Validate rule: if one face of the card is a “D” the other side must be a “3”.
-        if (card.alphabet === "D" && card.number !== 3 ) {
-            validationResult.error = 'Card "D" must have the number 3.';
+        if (card.alphabet === "D" && card.number !== 3) {
+            if (!card.errors) card.errors = [];
+            card.errors.push(`Card "D" must have the number 3.`);
+            logger.error(`Validation error in card at index ${card.id}: Card "D" must have the number 3.`);
         }
-  
+
         return validationResult;
     });
-  };
+};
 
 // Start Server
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+    logger.info(`Server running on http://localhost:${PORT}`);
 });
