@@ -1,10 +1,14 @@
 import express from "express";
 import winston from "winston";
-import fs from "fs";
 import { v1 as uuidv1 } from "uuid";
+import cors from 'cors';
+import { Mutex } from 'async-mutex';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Allow all origins (or configure as needed)
+app.use(cors());
 
 // Setup Winston logger
 const logger = winston.createLogger({
@@ -27,6 +31,7 @@ app.use(express.text());
 
 // History tracking
 let cardHistory = [];
+const historyMutex = new Mutex();
 
 // Endpoint to handle the list of cards
 app.post('/cards', (req, res) => {
@@ -56,6 +61,11 @@ app.post('/cards', (req, res) => {
 
     logger.info(`Received ${cards.length} cards for validation.`);
 
+    // Ensure exactly 20 cards are provided
+    if (cards.length !== 20) {
+        return res.status(400).json({ validationResult: 'The deck must have 20 cards.' });
+    }
+
     // Pre-process cards to handle multiple formats
     const cleanedCards = cards.map((card, index) => preProcess(card, index));
 
@@ -74,14 +84,14 @@ app.post('/cards', (req, res) => {
     if (invalidCards.length > 0) {
         logger.warn(`Validation failed for ${invalidCards.length} cards.`);
         return res.status(400).json({
-            error: 'Invalid card data.',
+            validationResult: 'Invalid card data.',
             discardCount: invalidCards.length,
             invalidCards: invalidCards
         });
     }
 
     logger.info("All cards validated successfully.");
-    res.status(200).json({ message: 'Deck is valid' });
+    res.status(200).json({ validationResult: 'Deck is valid' });
 });
 
 app.get('/history', (req, res) => {
@@ -89,17 +99,22 @@ app.get('/history', (req, res) => {
 });
 
 const saveHistory = async (scannedCards) => {
-    let deckId = uuidv1();
+    const release = await historyMutex.acquire();
+    try {
+        let deckId = uuidv1();
 
-    scannedCards.forEach(card => {
-        cardHistory.push({
-            deckId: deckId,
-            cardId: card.id,
-            alphabet: card.alphabet,
-            number: card.number,
-            errors: card.errors
+        scannedCards.forEach(card => {
+            cardHistory.push({
+                deckId: deckId,
+                cardId: card.id,
+                alphabet: card.alphabet,
+                number: card.number,
+                errors: card.errors
+            });
         });
-    });
+    } finally {
+        release(); // Release the lock
+    }
 };
 
 
@@ -180,10 +195,10 @@ const validateCards = (cards) => {
         let validationResult = { ...card }; // Copy the card to keep it intact
 
         // Validate alphabet
-        if (card.alphabet === null || !/[A-Z]/.test(card.alphabet)) {
+        if (card.alphabet === null || typeof card.alphabet !== 'string' || card.alphabet.length !== 1 || card.alphabet < 'A' || card.alphabet > 'Z') {
             if (!card.errors) card.errors = [];
-            card.errors.push('Card must have an Alphabet A-Z.');
-            logger.error(`Validation error in card at index ${card.id}: Card must have an Alphabet A-Z.`);
+            card.errors.push('Card must have a single Alphabet A-Z.');
+            logger.error(`Validation error in card at index ${card.id}: Card must have a single Alphabet A-Z.`);
         }
 
         // Validate number
