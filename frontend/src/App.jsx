@@ -40,7 +40,7 @@ function App() {
 
     try {
       const res = await axios.post(
-        "http://localhost:3000/cards",
+        "https://172.21.0.2:3200/cards",
         { cards: JSON.parse(cards) },
         { headers: { "Content-Type": "application/json" } }
       );
@@ -59,7 +59,7 @@ function App() {
 
   const fetchHistory = async () => {
     try {
-      const res = await axios.get("http://localhost:3000/history");
+      const res = await axios.get("https://172.21.0.2:3200/history");
       setHistory(res.data.history);
     } catch (err) {
       setError("Failed to fetch history");

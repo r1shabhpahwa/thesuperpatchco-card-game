@@ -5,7 +5,7 @@ import cors from 'cors';
 import { Mutex } from 'async-mutex';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3200;
 
 // Allow all origins (or configure as needed)
 app.use(cors());

@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  backend:
+    image: rishabhpahwa/superpatch-backend
+    ports:
+      - "3200:3200"
+
+  frontend:
+    image: rishabhpahwa/superpatch-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
